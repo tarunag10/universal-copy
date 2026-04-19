@@ -902,6 +902,9 @@
     menu.innerHTML = html;
     document.body.appendChild(menu);
 
+    // Sanitize event listener to prevent XSS
+    menu.onclick = null;
+
     // Add event listeners
     menu.querySelector('#scr-add-snippet')?.addEventListener('click', () => {
       const selection = window.getSelection();
