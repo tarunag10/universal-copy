@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Safari Copy Restore",
+  "name": "Universal Copy",
   "version": "1.0.0",
-  "description": "Restore and sync your clipboard history across devices.",
+  "description": "Bypass copy restrictions on restricted websites. Unlock right-click, text selection, and keyboard shortcuts.",
   "icons": {
     "128": "icon.svg"
   },
@@ -19,26 +19,34 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["content.js"],
-      "run_at": "document_idle"
+      "js": ["unlocker.js"],
+      "run_at": "document_start"
     }
   ],
   "permissions": [
     "clipboardRead",
     "clipboardWrite",
     "storage",
-    "tabs"
+    "tabs",
+    "contextMenus"
   ],
   "host_permissions": [
     "<all_urls>"
   ],
   "commands": {
-    "copy-last-item": {
+    "toggle-unlock": {
       "suggested_key": {
-        "default": "Ctrl+Shift+V",
-        "mac": "Command+Shift+V"
+        "default": "Ctrl+Shift+U",
+        "mac": "Command+Shift+U"
       },
-      "description": "Copy the most recent clipboard item"
+      "description": "Toggle page unlock"
+    },
+    "quick-copy": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+C",
+        "mac": "Command+Shift+C"
+      },
+      "description": "Copy all text from page"
     }
   }
 }

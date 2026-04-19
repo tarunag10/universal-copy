@@ -1,227 +1,280 @@
-const STORAGE_KEY = 'scr_items';
-const MAX_ITEMS = 500;
+/**
+ * SCR Background Service Worker
+ * Manages settings, domain profiles, and communicates with content scripts
+ */
 
-function detectType(text) {
-  const urlPattern = /^(https?:\/\/|www\.)[^\s]+$/i;
-  const codePatterns = [
-    /^import\s+/m,
-    /^export\s+/m,
-    /^const\s+\w+\s*=/m,
-    /^let\s+\w+\s*=/m,
-    /^function\s+\w+/m,
-    /^class\s+\w+/m,
-    /^\s*<\w+[^>]*>/m,
-    /\{\s*["']?\w+["']?\s*:/,
-    /^\s*[\w-]+\s*\([^)]*\)\s*\{/m,
-  ];
+const STORAGE_KEY = 'scr_settings';
+const DOMAIN_PRESETS_KEY = 'scr_domain_presets';
+const DOMAINS_KEY = 'scr_domains';
 
-  if (urlPattern.test(text.trim())) {
-    return 'link';
-  }
+const DEFAULT_SETTINGS = {
+  enableRightClick: true,
+  enableSelection: true,
+  enableCopy: true,
+  enableContextMenu: true,
+  enableKeyboard: true,
+  enableDrag: true,
+  enableTouch: true,
+  autoUnlock: false,
+  showToolbar: true,
+  globalHotkey: 'Command+Shift+U',
+  domainSettings: {},
+  activeProfile: null,
+};
 
-  for (const pattern of codePatterns) {
-    if (pattern.test(text)) {
-      return 'code';
-    }
-  }
+const PROFILES = {
+  news: {
+    name: 'News Sites',
+    settings: {
+      enableRightClick: true,
+      enableSelection: true,
+      enableCopy: true,
+      enableContextMenu: true,
+      enableKeyboard: true,
+      enableDrag: true,
+      enableTouch: true,
+    },
+    domains: ['nytimes.com', 'wsj.com', 'washingtonpost.com', 'theguardian.com', 'medium.com', 'ft.com', 'bloomberg.com', 'economist.com'],
+  },
+  realestate: {
+    name: 'Real Estate',
+    settings: {
+      enableRightClick: true,
+      enableSelection: true,
+      enableCopy: true,
+      enableContextMenu: true,
+      enableKeyboard: true,
+      enableDrag: true,
+      enableTouch: true,
+    },
+    domains: ['zillow.com', 'realtor.com', 'redfin.com', 'trulia.com', 'houses.com', 'rightmove.co.uk', 'zoopla.co.uk'],
+  },
+  government: {
+    name: 'Government Forms',
+    settings: {
+      enableRightClick: true,
+      enableSelection: true,
+      enableCopy: true,
+      enableContextMenu: true,
+      enableKeyboard: true,
+      enableDrag: true,
+      enableTouch: true,
+    },
+    domains: ['.gov', '.gov.uk', 'gov.au', 'govt.nz'],
+  },
+  academic: {
+    name: 'Academic/Journals',
+    settings: {
+      enableRightClick: true,
+      enableSelection: true,
+      enableCopy: true,
+      enableContextMenu: true,
+      enableKeyboard: true,
+      enableDrag: true,
+      enableTouch: true,
+    },
+    domains: ['jstor.org', 'sciencedirect.com', 'springer.com', 'wiley.com', 'ieee.org', 'acm.org', 'nature.com'],
+  },
+  minimal: {
+    name: 'Minimal Override',
+    settings: {
+      enableRightClick: true,
+      enableSelection: false,
+      enableCopy: false,
+      enableContextMenu: true,
+      enableKeyboard: false,
+      enableDrag: false,
+      enableTouch: false,
+    },
+    domains: [],
+  },
+};
 
-  return 'text';
-}
-
-function getSourceName(tab) {
-  try {
-    const url = new URL(tab.url);
-    if (url.hostname.includes('github')) return 'GitHub';
-    if (url.hostname.includes('stackoverflow')) return 'StackOverflow';
-    if (url.hostname.includes('medium')) return 'Medium';
-    if (url.hostname.includes('twitter') || url.hostname.includes('x.com')) return 'Twitter';
-    if (url.hostname.includes('slack')) return 'Slack';
-    if (url.hostname.includes('notion')) return 'Notion';
-    return url.hostname.replace('www.', '');
-  } catch {
-    return 'Unknown';
-  }
-}
-
-function generateId() {
-  return Date.now().toString(36) + Math.random().toString(36).substr(2, 9);
-}
-
-function getDeviceId() {
-  let deviceId = localStorage.getItem('scr_device_id');
-  if (!deviceId) {
-    deviceId = generateId();
-    localStorage.setItem('scr_device_id', deviceId);
-  }
-  return deviceId;
-}
-
-function getItems() {
+function getSettings() {
   try {
     const data = localStorage.getItem(STORAGE_KEY);
+    return data ? { ...DEFAULT_SETTINGS, ...JSON.parse(data) } : { ...DEFAULT_SETTINGS };
+  } catch {
+    return { ...DEFAULT_SETTINGS };
+  }
+}
+
+function saveSettings(settings) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+  } catch (e) {
+    console.error('Failed to save settings:', e);
+  }
+}
+
+function updateSettings(updates) {
+  const settings = getSettings();
+  const newSettings = { ...settings, ...updates };
+  saveSettings(newSettings);
+  broadcastSettings(newSettings);
+  return newSettings;
+}
+
+function getDomainSettings(domain) {
+  const settings = getSettings();
+  return settings.domainSettings[domain] || null;
+}
+
+function setDomainSettings(domain, domainSettings) {
+  const settings = getSettings();
+  settings.domainSettings[domain] = domainSettings;
+  saveSettings(settings);
+}
+
+function clearDomainSettings(domain) {
+  const settings = getSettings();
+  delete settings.domainSettings[domain];
+  saveSettings(settings);
+}
+
+function getAllDomains() {
+  const settings = getSettings();
+  return Object.keys(settings.domainSettings);
+}
+
+function getDomains() {
+  try {
+    const data = localStorage.getItem(DOMAINS_KEY);
     return data ? JSON.parse(data) : [];
   } catch {
     return [];
   }
 }
 
-function saveItems(items) {
+function saveDomains(domains) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
+    localStorage.setItem(DOMAINS_KEY, JSON.stringify(domains));
   } catch (e) {
-    console.error('Failed to save items:', e);
+    console.error('Failed to save domains:', e);
   }
 }
 
-function addItem(text, sourceUrl, sourceName, type) {
-  const items = getItems();
+function detectRestrictedSite(tab) {
+  return new Promise((resolve) => {
+    chrome.tabs.sendMessage(tab.id, { type: 'GET_STATUS' }, (response) => {
+      resolve(response?.restricted || false);
+    });
+  });
+}
 
-  const existingIndex = items.findIndex(item => item.text === text);
-  if (existingIndex !== -1) {
-    items.splice(existingIndex, 1);
-  }
+function applyProfile(profileName) {
+  const profile = PROFILES[profileName];
+  if (!profile) return null;
 
-  const newItem = {
-    id: generateId(),
-    _creationTime: Date.now(),
-    text: text,
-    sourceUrl: sourceUrl || null,
-    sourceName: sourceName,
-    type: type,
-    deviceId: getDeviceId(),
-    isFavorite: false,
-    isDeleted: false,
-  };
+  const settings = getSettings();
+  const newSettings = { ...settings, ...profile.settings };
+  saveSettings(newSettings);
+  broadcastSettings(newSettings);
 
-  items.unshift(newItem);
-
-  while (items.length > MAX_ITEMS) {
-    const lastNonFavorite = items.findLastIndex(item => !item.isFavorite && item.isDeleted);
-    if (lastNonFavorite !== -1) {
-      items.splice(lastNonFavorite, 1);
-    } else {
-      items.pop();
+  // Also save domains
+  const domains = getDomains();
+  profile.domains.forEach(d => {
+    if (!domains.includes(d)) {
+      domains.push(d);
     }
-  }
+  });
+  saveDomains(domains);
 
-  saveItems(items);
-
-  chrome.runtime.sendMessage({ type: 'ITEM_ADDED', item: newItem }).catch(() => {});
-
-  return newItem;
-}
-
-function removeItem(id) {
-  const items = getItems();
-  const index = items.findIndex(item => item.id === id);
-  if (index !== -1) {
-    items[index].isDeleted = true;
-    saveItems(items);
-  }
-}
-
-function restoreItem(id) {
-  const items = getItems();
-  const index = items.findIndex(item => item.id === id);
-  if (index !== -1) {
-    items[index].isDeleted = false;
-    saveItems(items);
-  }
-}
-
-function permanentDeleteItem(id) {
-  const items = getItems();
-  const index = items.findIndex(item => item.id === id);
-  if (index !== -1) {
-    items.splice(index, 1);
-    saveItems(items);
-  }
-}
-
-function toggleFavorite(id) {
-  const items = getItems();
-  const index = items.findIndex(item => item.id === id);
-  if (index !== -1) {
-    items[index].isFavorite = !items[index].isFavorite;
-    saveItems(items);
-    return items[index].isFavorite;
-  }
-  return false;
-}
-
-function clearAll(toTrash) {
-  const items = getItems();
-  if (toTrash) {
-    items.forEach(item => {
-      if (!item.isFavorite) {
-        item.isDeleted = true;
-      }
+  // Inject unlocker to all tabs
+  chrome.tabs.query({}, (tabs) => {
+    tabs.forEach(tab => {
+      try {
+        chrome.tabs.sendMessage(tab.id, { type: 'UPDATE_SETTINGS', data: profile.settings });
+      } catch (e) {}
     });
-  } else {
-    items.forEach(item => {
-      item.isDeleted = true;
+  });
+
+  return newSettings;
+}
+
+function broadcastSettings(settings) {
+  chrome.tabs.query({}, (tabs) => {
+    tabs.forEach(tab => {
+      try {
+        chrome.tabs.sendMessage(tab.id, { type: 'SETTINGS_UPDATED', settings });
+      } catch (e) {}
     });
-  }
-  saveItems(items);
+  });
 }
 
-function emptyTrash() {
-  const items = getItems().filter(item => !item.isDeleted);
-  saveItems(items);
-}
-
-chrome.runtime.onInstalled.addListener(() => {
-  console.log('Extension installed');
-  getDeviceId();
-});
+// ==================== MESSAGES ====================
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  switch (message.type) {
-    case 'GET_ITEMS':
-      sendResponse({ items: getItems() });
+  const { type, data } = message;
+  const tab = sender.tab;
+
+  switch (type) {
+    case 'GET_SETTINGS':
+      sendResponse({ settings: getSettings() });
       break;
 
-    case 'ADD_ITEM': {
-      const { text, sourceUrl, sourceName } = message;
-      const type = detectType(text);
-      const item = addItem(text, sourceUrl, sourceName || 'Browser', type);
-      sendResponse({ item });
+    case 'UPDATE_SETTINGS':
+      updateSettings(data);
+      sendResponse({ success: true, settings: getSettings() });
       break;
-    }
 
-    case 'REMOVE_ITEM':
-      removeItem(message.id);
+    case 'GET_PROFILE':
+      sendResponse({ profiles: PROFILES, activeProfile: getSettings().activeProfile });
+      break;
+
+    case 'APPLY_PROFILE':
+      const newSettings = applyProfile(data.profileName);
+      updateSettings({ activeProfile: data.profileName });
+      sendResponse({ success: true, settings: newSettings });
+      break;
+
+    case 'GET_DOMAIN_SETTINGS':
+      sendResponse({ settings: getDomainSettings(data.domain) });
+      break;
+
+    case 'SET_DOMAIN_SETTINGS':
+      setDomainSettings(data.domain, data.settings);
       sendResponse({ success: true });
       break;
 
-    case 'RESTORE_ITEM':
-      restoreItem(message.id);
+    case 'CLEAR_DOMAIN_SETTINGS':
+      clearDomainSettings(data.domain);
       sendResponse({ success: true });
       break;
 
-    case 'PERMANENT_DELETE_ITEM':
-      permanentDeleteItem(message.id);
+    case 'GET_ALL_DOMAINS':
+      sendResponse({ domains: getAllDomains() });
+      break;
+
+    case 'UNLOCK_PAGE':
+      chrome.tabs.sendMessage(tab.id, { type: 'UNLOCK' });
       sendResponse({ success: true });
       break;
 
-    case 'TOGGLE_FAVORITE': {
-      const isFavorite = toggleFavorite(message.id);
-      sendResponse({ isFavorite });
-      break;
-    }
-
-    case 'CLEAR_ALL':
-      clearAll(message.toTrash);
+    case 'LOCK_PAGE':
+      chrome.tabs.sendMessage(tab.id, { type: 'LOCK' });
       sendResponse({ success: true });
       break;
 
-    case 'EMPTY_TRASH':
-      emptyTrash();
-      sendResponse({ success: true });
+    case 'CHECK_RESTRICTED':
+      detectRestrictedSite(tab).then((restricted) => {
+        sendResponse({ restricted });
+      });
+      return true;
+
+    case 'GET_TABS':
+      chrome.tabs.query({}, (tabs) => {
+        sendResponse({ tabs: tabs.map(t => ({ id: t.id, url: t.url, title: t.title })) });
+      });
       break;
 
-    case 'GET_DEVICE_ID':
-      sendResponse({ deviceId: getDeviceId() });
+    case 'INJECT_UNLOCKER':
+      chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ['unlocker.js'],
+      }, () => {
+        sendResponse({ success: true });
+      });
       break;
 
     default:
@@ -231,14 +284,90 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true;
 });
 
+// ==================== COMMANDS ====================
+
 chrome.commands?.onCommand.addListener((command) => {
-  if (command === 'copy-last-item') {
-    const items = getItems().filter(item => !item.isDeleted);
-    if (items.length > 0) {
-      chrome.runtime.sendMessage({
-        type: 'COPY_TO_CLIPBOARD',
-        text: items[0].text,
-      }).catch(() => {});
-    }
+  if (command === 'toggle-unlock') {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (tabs[0]) {
+        chrome.tabs.sendMessage(tabs[0].id, { type: 'TOGGLE' });
+      }
+    });
+  }
+
+  if (command === 'quick-copy') {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (tabs[0]) {
+        chrome.tabs.sendMessage(tabs[0].id, { type: 'COPY_ALL' });
+      }
+    });
   }
 });
+
+// ==================== CONTEXT MENU ====================
+
+chrome.runtime.onInstalled.addListener(() => {
+  // Create context menu items
+  chrome.contextMenus?.create({
+    id: 'scr-unlock',
+    title: 'Unlock Page',
+    contexts: ['page', 'frame'],
+  });
+
+  chrome.contextMenus?.create({
+    id: 'scr-copy-all',
+    title: 'Copy All Text',
+    contexts: ['page', 'frame'],
+  });
+
+  chrome.contextMenus?.create({
+    id: 'scr-extract-images',
+    title: 'Extract Image URLs',
+    contexts: ['page', 'frame'],
+  });
+});
+
+chrome.contextMenus?.onClicked.addListener((info, tab) => {
+  if (!tab) return;
+
+  switch (info.menuItemId) {
+    case 'scr-unlock':
+      chrome.tabs.sendMessage(tab.id, { type: 'UNLOCK' });
+      break;
+    case 'scr-copy-all':
+      chrome.tabs.sendMessage(tab.id, { type: 'COPY_ALL' });
+      break;
+    case 'scr-extract-images':
+      chrome.tabs.sendMessage(tab.id, { type: 'EXTRACT_IMAGES' });
+      break;
+  }
+});
+
+// ====================badge updates ====================
+
+function updateBadge(tab) {
+  try {
+    chrome.tabs.sendMessage(tab.id, { type: 'GET_STATUS' }, (response) => {
+      if (response?.restricted) {
+        chrome.action?.setBadgeText({ tabId: tab.id, text: '🔓' });
+        chrome.action?.setBadgeBackgroundColor({ tabId: tab.id, color: '#22c55e' });
+      } else {
+        chrome.action?.setBadgeText({ tabId: tab.id, text: '' });
+      }
+    });
+  } catch (e) {}
+}
+
+chrome.tabs?.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status === 'complete') {
+    updateBadge(tab);
+  }
+});
+
+chrome.tabs?.onActivated.addListener((activeInfo) => {
+  chrome.tabs.get(activeInfo.tabId, (tab) => {
+    updateBadge(tab);
+  });
+});
+
+console.log('🟢 SCR Background Service initialized');
